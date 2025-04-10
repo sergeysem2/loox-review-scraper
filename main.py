@@ -1,50 +1,76 @@
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 import csv
-import time
 import os
+import time
+import requests
 from urllib.parse import urlparse
 
-store_name = "eric-box"
-encoded_product_id = "Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzY5MzAwODcyNjA0MjI="  # Replace if needed
-max_pages = 10
+# === CONFIG ===
+product_url = "https://www.eric-box.com/products/ee-shorts"
 output_csv = "reviews.csv"
 image_folder = "review_images"
 
-headers = {
-    "User-Agent": "Mozilla/5.0"
-}
+# Setup Selenium with headless Chrome using webdriver-manager
+options = Options()
+options.add_argument('--headless')
+options.add_argument('--disable-gpu')
+options.add_argument('--window-size=1920x1080')
+driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-# Create image folder if it doesn't exist
+# Create output folder for images
 os.makedirs(image_folder, exist_ok=True)
 
-# CSV Setup
+# Open CSV for writing
 with open(output_csv, mode="w", newline="", encoding="utf-8") as file:
     writer = csv.writer(file)
     writer.writerow(["Reviewer Name", "Rating", "Review Text", "Date", "Image Filenames"])
 
-    for page in range(1, max_pages + 1):
-        url = f"https://loox.io/widget/YUtV5p1gqJ/reviews/9249279541525?limit=100&page={page}"
-        response = requests.get(url, headers=headers)
+    print(f"🌐 Opening product page: {product_url}")
+    driver.get(product_url)
+    wait = WebDriverWait(driver, 10)
 
-        if response.status_code != 200:
-            print(f"Failed on page {page} with status code {response.status_code}")
+    # Scroll down to the reviews section
+    time.sleep(5)
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(5)
+
+    # Continuously click 'Load More' until all reviews are shown
+    while True:
+        try:
+            load_more = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Load More')]")))
+            driver.execute_script("arguments[0].click();", load_more)
+            time.sleep(3)
+        except:
+            print("✅ All reviews loaded or no 'Load More' button found.")
             break
 
-        data = response.json()
-        reviews = data.get("reviews", [])
+    # Parse review elements
+    reviews = driver.find_elements(By.CSS_SELECTOR, ".loox-review")
+    print(f"📝 Found {len(reviews)} reviews")
 
-        if not reviews:
-            print(f"No more reviews found on page {page}.")
-            break
+    total_reviews = 0
 
-        for idx, review in enumerate(reviews):
-            photos = review.get("photos", [])
+    for review in reviews:
+        try:
+            reviewer_name = review.find_element(By.CSS_SELECTOR, ".loox-author-name").text
+            rating = len(review.find_elements(By.CSS_SELECTOR, ".loox-star.loox-filled"))
+            review_text = review.find_element(By.CSS_SELECTOR, ".loox-review-content").text
+            date = review.find_element(By.CSS_SELECTOR, ".loox-review-date").text
+
+            photos = review.find_elements(By.CSS_SELECTOR, ".loox-gallery-image")
             image_filenames = []
 
-            for i, photo_url in enumerate(photos):
+            for photo in photos:
                 try:
-                    parsed_url = urlparse(photo_url)
-                    file_name = os.path.basename(parsed_url.path)
+                    photo_url = photo.get_attribute("src")
+                    file_name = os.path.basename(urlparse(photo_url).path)
                     image_path = os.path.join(image_folder, file_name)
 
                     img_data = requests.get(photo_url).content
@@ -53,15 +79,16 @@ with open(output_csv, mode="w", newline="", encoding="utf-8") as file:
 
                     image_filenames.append(file_name)
                 except Exception as e:
-                    print(f"Failed to download image: {photo_url} - {e}")
+                    print(f"❌ Failed to download image: {photo_url} — {e}")
 
-            writer.writerow([
-                review.get("reviewer_name", ""),
-                review.get("rating", ""),
-                review.get("text", "").replace("\n", " "),
-                review.get("created", ""),
-                ", ".join(image_filenames)
-            ])
+            writer.writerow([reviewer_name, rating, review_text.replace("\n", " "), date, ", ".join(image_filenames)])
+            total_reviews += 1
 
-        print(f"✅ Page {page} processed with {len(reviews)} reviews.")
-        time.sleep(1)  
+        except Exception as e:
+            print(f"⚠️ Skipped a review due to error: {e}")
+
+    driver.quit()
+    print(f"\n🎉 Scraping complete! Total reviews saved: {total_reviews}")
+    print(f"📄 Output CSV: {output_csv}")
+    print(f"🖼️ Images saved to: {image_folder}/")
+    print("🔄 Closing browser...")
